@@ -1,0 +1,125 @@
+name: publish image Catalog
+
+on:
+  workflow_dispatch:
+    inputs:
+      object_key:
+        description: Built image object key
+        required: true
+        type: string
+      url:
+        description: Complete public HTTPS image URL
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  DEBIAN_FRONTEND: noninteractive
+
+concurrency:
+  group: image-storage
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    environment: R2
+    runs-on: ubuntu-24.04
+    container:
+      image: debian:13-slim
+      options: --user 0:0
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      # Use ordinary SigV4 uploads for R2 instead of streaming checksum trailers.
+      AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+      R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      OBJECT_KEY: ${{ inputs.object_key }}
+      IMAGE_URL: ${{ inputs.url }}
+    steps:
+      - name: Install publishing tools
+        run: |
+          apt-get update
+          apt-get install --yes --no-install-recommends awscli ca-certificates curl gh git jq openssl python3
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Read attested build manifest
+        id: image
+        run: |
+          : "${AWS_ACCESS_KEY_ID:?R2_ACCESS_KEY_ID secret is required in the R2 environment}"
+          : "${AWS_SECRET_ACCESS_KEY:?R2_SECRET_ACCESS_KEY secret is required in the R2 environment}"
+          : "${R2_ENDPOINT_URL:?R2_ENDPOINT_URL secret is required in the R2 environment}"
+          : "${R2_BUCKET:?R2_BUCKET secret is required in the R2 environment}"
+          if [[ "${R2_ENDPOINT_URL}" != https://* ]]; then
+            printf '::error::R2_ENDPOINT_URL must use HTTPS\n' >&2
+            exit 1
+          fi
+          manifest_key="$(python3 scripts/images.py locate "${OBJECT_KEY}")"
+          aws --endpoint-url "${R2_ENDPOINT_URL}" s3 cp \
+            "s3://${R2_BUCKET}/${manifest_key}" "${RUNNER_TEMP}/build.json" --only-show-errors
+          python3 scripts/catalog.py build "${RUNNER_TEMP}/build.json" --object-key "${OBJECT_KEY}" >>"${GITHUB_OUTPUT}"
+
+      - name: Verify public image bytes
+        env:
+          RESULT_SHA256: ${{ steps.image.outputs.sha256 }}
+          SIZE_BYTES: ${{ steps.image.outputs.size_bytes }}
+        run: |
+          image="${RUNNER_TEMP}/image.qcow2"
+          curl --fail --show-error --silent --location --proto '=https' --proto-redir '=https' \
+            "${IMAGE_URL}" --output "${image}"
+          printf '%s  %s\n' "${RESULT_SHA256}" "${image}" | sha256sum --check --strict
+          [[ "$(stat -c '%s' "${image}")" == "${SIZE_BYTES}" ]]
+
+      - name: Sign and publish Catalog
+        env:
+          CATALOG_SIGNING_KEY_PEM: ${{ secrets.CATALOG_SIGNING_KEY_PEM }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          work="$(mktemp -d "${RUNNER_TEMP}/catalog.XXXXXXXX")"
+          key="${work}/catalog-signing.pem"
+          trap 'rm -f -- "${key}"' EXIT
+          umask 077
+          printf '%s' "${CATALOG_SIGNING_KEY_PEM}" >"${key}"
+          openssl pkey -in "${key}" -pubout -out "${work}/derived-public.pem"
+          cmp "${work}/derived-public.pem" catalog/keys/catalog-2026-01.pem
+
+          current_args=()
+          catalog_url="https://github.com/Ithildur/os-images/releases/download/catalog-v1/catalog.json"
+          status="$(curl --show-error --silent --location "${catalog_url}?run=${GITHUB_RUN_ID}" \
+            --output "${work}/current.json" --write-out '%{http_code}')"
+          case "${status}" in
+            200) current_args=(--current "${work}/current.json") ;;
+            404) ;;
+            *) printf 'Catalog download failed: HTTP %s\n' "${status}" >&2; exit 1 ;;
+          esac
+          python3 scripts/catalog.py publish "${current_args[@]}" \
+            --public-key catalog/keys/catalog-2026-01.pem --private-key "${key}" \
+            --build "${RUNNER_TEMP}/build.json" --url "${IMAGE_URL}" --output "${work}/catalog.json"
+
+          release="$(gh api --paginate 'repos/{owner}/{repo}/releases' \
+            --jq '.[] | select(.tag_name == "catalog-v1") | .tag_name')"
+          if [[ -z "${release}" ]]; then
+            gh release create catalog-v1 --title "Built-in image catalog" \
+              --notes "Signed runtime Catalog for VPS Manager built-in images."
+          fi
+          gh release upload catalog-v1 "${work}/catalog.json" --clobber
+          cp "${work}/catalog.json" "${RUNNER_TEMP}/catalog.json"
+
+      - name: Upload signed Catalog
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: catalog
+          path: ${{ runner.temp }}/catalog.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Update latest pointers and remove obsolete revisions
+        run: python3 scripts/storage.py prune --catalog "${RUNNER_TEMP}/catalog.json"

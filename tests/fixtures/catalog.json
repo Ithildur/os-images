@@ -1,0 +1,39 @@
+{
+  "manifest": {
+    "images": [
+      {
+        "key": "debian13-latest",
+        "kind": "bootable",
+        "name": "Debian <云> & \"server\" \\u2028 \u2028 \u2029 edition",
+        "revision": {
+          "contract": {
+            "guest": {
+              "architecture": "x86_64",
+              "credential_user": "root",
+              "family": "linux",
+              "firmware": {
+                "secure_boot": false,
+                "type": "bios"
+              },
+              "generalized": true,
+              "guest_agent": true,
+              "initialization": {
+                "data_source": "nocloud",
+                "kind": "linux_cloud_init"
+              },
+              "signed_virtio_drivers": false
+            },
+            "purpose": "provisioning"
+          },
+          "format": "qcow2",
+          "sha256": "sha256:abababababababababababababababababababababababababababababababab",
+          "size_bytes": 4096,
+          "url": "https://images.example.test/debian.qcow2?mirror=1&download=true"
+        }
+      }
+    ],
+    "sequence": 4
+  },
+  "schema": "vps-manager-image-catalog/v1",
+  "signature": "rGKGnPKlvj+I0CGFSdbdhACu4t2A+X2AqozemhBVOFsJ0h2MG10rOyu5fTphds/Prjz74/MQOr3vagm97fimCg=="
+}

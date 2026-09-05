@@ -1,0 +1,51 @@
+name: clean up OS images
+
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: Image key, or all
+        required: true
+        default: all
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: image-storage
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  DEBIAN_FRONTEND: noninteractive
+
+jobs:
+  cleanup:
+    environment: R2
+    runs-on: ubuntu-24.04
+    container:
+      image: debian:13-slim
+      options: --user 0:0
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      # Use ordinary SigV4 uploads for R2 instead of streaming checksum trailers.
+      AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+      R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      IMAGE_KEY: ${{ inputs.image }}
+    steps:
+      - name: Install cleanup tools
+        run: |
+          apt-get update
+          apt-get install --yes --no-install-recommends awscli ca-certificates git openssl python3
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Update latest pointers and remove obsolete revisions
+        run: python3 scripts/storage.py prune --image "${IMAGE_KEY}"

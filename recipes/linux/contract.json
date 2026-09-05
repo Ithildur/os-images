@@ -1,0 +1,13 @@
+{
+  "purpose": "provisioning",
+  "guest": {
+    "family": "linux",
+    "architecture": "x86_64",
+    "credential_user": "root",
+    "initialization": {"kind": "linux_cloud_init", "data_source": "nocloud"},
+    "generalized": true,
+    "guest_agent": true,
+    "firmware": {"type": "bios", "secure_boot": false},
+    "signed_virtio_drivers": false
+  }
+}

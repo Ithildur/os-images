@@ -1,0 +1,38 @@
+{
+  "debian11-latest": {
+    "name": "Debian 11", "family": "debian", "path": "debian/11",
+    "url": "https://cloud.debian.org/images/cloud/bullseye/latest/debian-11-generic-amd64.qcow2",
+    "checksum_algorithm": "sha512", "checksums": "https://cloud.debian.org/images/cloud/bullseye/latest/SHA512SUMS",
+    "license": "https://www.debian.org/legal/licenses/"
+  },
+  "debian12-latest": {
+    "name": "Debian 12", "family": "debian", "path": "debian/12",
+    "url": "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2",
+    "checksum_algorithm": "sha512", "checksums": "https://cloud.debian.org/images/cloud/bookworm/latest/SHA512SUMS",
+    "license": "https://www.debian.org/legal/licenses/"
+  },
+  "debian13-latest": {
+    "name": "Debian 13", "family": "debian", "path": "debian/13",
+    "url": "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-generic-amd64.qcow2",
+    "checksum_algorithm": "sha512", "checksums": "https://cloud.debian.org/images/cloud/trixie/latest/SHA512SUMS",
+    "license": "https://www.debian.org/legal/licenses/"
+  },
+  "ubuntu2204-latest": {
+    "name": "Ubuntu 22.04 LTS", "family": "debian", "path": "ubuntu/22.04",
+    "url": "https://cloud-images.ubuntu.com/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img",
+    "checksum_algorithm": "sha256", "checksums": "https://cloud-images.ubuntu.com/releases/jammy/release/SHA256SUMS",
+    "license": "https://ubuntu.com/legal/intellectual-property-policy"
+  },
+  "centos9-stream-latest": {
+    "name": "CentOS Stream 9", "family": "redhat", "path": "centos/9-stream",
+    "url": "https://cloud.centos.org/centos/9-stream/x86_64/images/CentOS-Stream-GenericCloud-9-latest.x86_64.qcow2",
+    "checksum_algorithm": "sha256", "checksums": "https://cloud.centos.org/centos/9-stream/x86_64/images/CentOS-Stream-GenericCloud-9-latest.x86_64.qcow2.SHA256SUM",
+    "license": "https://www.centos.org/legal/"
+  },
+  "ubuntu2404-latest": {
+    "name": "Ubuntu 24.04 LTS", "family": "debian", "path": "ubuntu/24.04",
+    "url": "https://cloud-images.ubuntu.com/releases/noble/release/ubuntu-24.04-server-cloudimg-amd64.img",
+    "checksum_algorithm": "sha256", "checksums": "https://cloud-images.ubuntu.com/releases/noble/release/SHA256SUMS",
+    "license": "https://ubuntu.com/legal/intellectual-property-policy"
+  }
+}

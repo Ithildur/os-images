@@ -1,0 +1,186 @@
+name: build OS images
+
+on:
+  schedule:
+    - cron: "17 3 * * 3"
+  workflow_dispatch:
+    inputs:
+      image:
+        description: Image key, or all
+        required: true
+        default: all
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: image-storage
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  DEBIAN_FRONTEND: noninteractive
+
+jobs:
+  select:
+    runs-on: ubuntu-24.04
+    container:
+      image: debian:13-slim
+      options: --user 0:0
+    permissions:
+      contents: read
+    outputs:
+      images: ${{ steps.matrix.outputs.images }}
+    steps:
+      - name: Install recipe tools
+        run: |
+          apt-get update
+          apt-get install --yes --no-install-recommends ca-certificates git python3
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Select image recipes
+        id: matrix
+        env:
+          IMAGE: ${{ github.event_name == 'schedule' && 'all' || inputs.image }}
+        run: |
+          images="$(python3 scripts/images.py matrix "${IMAGE}")"
+          printf 'images=%s\n' "${images}" >>"${GITHUB_OUTPUT}"
+
+  build:
+    needs: select
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(needs.select.outputs.images) }}
+    environment: R2
+    runs-on: ubuntu-24.04
+    container:
+      image: debian:13-slim
+      options: --user 0:0 --device /dev/kvm
+    timeout-minutes: 120
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      # Use ordinary SigV4 uploads for R2 instead of streaming checksum trailers.
+      AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+      R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      VPS_IMAGE_BUILD: remote-ci
+      IMAGE_KEY: ${{ matrix.image }}
+    steps:
+      - name: Validate storage configuration
+        run: |
+          : "${AWS_ACCESS_KEY_ID:?R2_ACCESS_KEY_ID secret is required in the R2 environment}"
+          : "${AWS_SECRET_ACCESS_KEY:?R2_SECRET_ACCESS_KEY secret is required in the R2 environment}"
+          : "${R2_ENDPOINT_URL:?R2_ENDPOINT_URL secret is required in the R2 environment}"
+          : "${R2_BUCKET:?R2_BUCKET secret is required in the R2 environment}"
+          if [[ "${R2_ENDPOINT_URL}" != https://* ]]; then
+            printf '::error::R2_ENDPOINT_URL must use HTTPS\n' >&2
+            exit 1
+          fi
+
+      - name: Install build and static-analysis tools
+        run: |
+          apt-get update
+          apt-get install --yes --no-install-recommends \
+            awscli ca-certificates curl git golang-go jq libguestfs-tools libguestfs-xfs \
+            linux-image-amd64 make openssl python3 qemu-utils shellcheck
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+          printf '%s\n' "$(go env GOPATH)/bin" >>"${GITHUB_PATH}"
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Check recipes, workflows, and Catalog schema
+        run: make check
+
+      - name: Resolve official upstream revision
+        id: upstream
+        run: |
+          python3 scripts/images.py resolve "${IMAGE_KEY}" >>"${GITHUB_OUTPUT}"
+
+      - name: Reuse or build immutable image
+        id: image
+        env:
+          UPSTREAM_URL: ${{ steps.upstream.outputs.upstream_url }}
+          UPSTREAM_FILENAME: ${{ steps.upstream.outputs.upstream_filename }}
+          UPSTREAM_DIGEST: ${{ steps.upstream.outputs.upstream_digest }}
+          CHECKSUM_ALGORITHM: ${{ steps.upstream.outputs.checksum_algorithm }}
+        run: |
+          work="$(mktemp -d "${RUNNER_TEMP}/image-build.XXXXXXXX")"
+          reused="$(python3 scripts/storage.py reuse --image "${IMAGE_KEY}" \
+            --upstream-digest "${UPSTREAM_DIGEST}" --output "${work}/build.json")"
+          if [[ "${reused}" == true ]]; then
+            object_key="$(jq --exit-status --raw-output .object_key "${work}/build.json")"
+            python3 scripts/catalog.py build "${work}/build.json" --object-key "${object_key}" >>"${GITHUB_OUTPUT}"
+            printf 'built=false\n' >>"${GITHUB_OUTPUT}"
+            cp "${work}/build.json" "${RUNNER_TEMP}/build.json"
+            exit 0
+          fi
+
+          curl --fail --show-error --silent --location "${UPSTREAM_URL}" --output "${work}/${UPSTREAM_FILENAME}"
+          printf '%s  %s\n' "${UPSTREAM_DIGEST#*:}" "${work}/${UPSTREAM_FILENAME}" | "${CHECKSUM_ALGORITHM}sum" --check --strict
+          output="${work}/image.qcow2"
+          metadata="${work}/metadata"
+          ./scripts/build-image.sh "${IMAGE_KEY}" "${work}/${UPSTREAM_FILENAME}" "${output}" "${metadata}"
+          result_sha256="$(sha256sum "${output}" | cut -d' ' -f1)"
+          size_bytes="$(stat -c '%s' "${output}")"
+          python3 scripts/images.py record --image "${IMAGE_KEY}" --upstream-digest "${UPSTREAM_DIGEST}" \
+            --sha256 "${result_sha256}" --size-bytes "${size_bytes}" --metadata "${metadata}" --output "${work}"
+          object_key="$(jq --exit-status --raw-output .object_key "${work}/build.json")"
+          python3 scripts/catalog.py build "${work}/build.json" --object-key "${object_key}" >>"${GITHUB_OUTPUT}"
+
+          aws --endpoint-url "${R2_ENDPOINT_URL}" s3 cp "${output}" "s3://${R2_BUCKET}/${object_key}" --only-show-errors
+          aws --endpoint-url "${R2_ENDPOINT_URL}" s3 cp "${work}/image.sha256" \
+            "s3://${R2_BUCKET}/${object_key%.qcow2}.sha256" --content-type text/plain --only-show-errors
+          aws --endpoint-url "${R2_ENDPOINT_URL}" s3 cp "${work}/provenance.json" \
+            "s3://${R2_BUCKET}/${object_key%.qcow2}.provenance.json" --content-type application/json --only-show-errors
+          cp "${output}" "${RUNNER_TEMP}/image.qcow2"
+          cp "${work}/build.json" "${RUNNER_TEMP}/build.json"
+          printf 'built=true\n' >>"${GITHUB_OUTPUT}"
+
+      - name: Attest newly built image
+        if: ${{ steps.image.outputs.built == 'true' }}
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: ${{ runner.temp }}/image.qcow2
+
+      - name: Record attested build
+        env:
+          OBJECT_KEY: ${{ steps.image.outputs.object_key }}
+        run: |
+          aws --endpoint-url "${R2_ENDPOINT_URL}" s3 cp "${RUNNER_TEMP}/build.json" \
+            "s3://${R2_BUCKET}/${OBJECT_KEY%/*}/build.json" --content-type application/json --only-show-errors
+
+      - name: Summarize build
+        env:
+          RESULT_SHA256: ${{ steps.image.outputs.sha256 }}
+          SIZE_BYTES: ${{ steps.image.outputs.size_bytes }}
+          OBJECT_KEY: ${{ steps.image.outputs.object_key }}
+        run: |
+          cat >>"${GITHUB_STEP_SUMMARY}" <<EOF
+          ## ${IMAGE_KEY}
+
+          | Field | Value |
+          | --- | --- |
+          | Object key | \`${OBJECT_KEY}\` |
+          | SHA-256 | \`${RESULT_SHA256}\` |
+          | Size (bytes) | ${SIZE_BYTES} |
+          EOF
+
+      - name: Upload build evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ matrix.image }}
+          path: ${{ runner.temp }}/build.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Update latest pointers and remove obsolete revisions
+        run: python3 scripts/storage.py prune --image "${IMAGE_KEY}"

@@ -1,0 +1,6 @@
+.build/
+__pycache__/
+*.img
+*.iso
+*.qcow2
+*.raw
