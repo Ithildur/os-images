@@ -10,15 +10,9 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
-import time
-from urllib.error import HTTPError
-from urllib.request import urlopen
 
 import catalog
 import images
-
-
-CATALOG_URL = "https://github.com/Ithildur/os-images/releases/download/catalog-v1/catalog.json"
 
 
 def aws(*arguments: str) -> str:
@@ -84,17 +78,29 @@ def reuse(image: str, upstream_digest: str, output: Path) -> bool:
     return False
 
 
+def latest(image: str, output: Path) -> None:
+    builds = attested_builds(image, revisions(image))
+    if not builds:
+        raise ValueError(f"no completed build for {image}")
+    images.write_json(output, builds[0])
+
+
+def fetch_catalog(output: Path) -> bool:
+    listing = json.loads(aws("s3api", "list-objects-v2", "--bucket", os.environ["R2_BUCKET"],
+                             "--prefix", "catalog.json", "--output", "json"))
+    if not any(item["Key"] == "catalog.json" for item in listing.get("Contents", [])):
+        return False
+    aws("s3", "cp", object_url("catalog.json"), str(output), "--only-show-errors")
+    return True
+
+
 def current_catalog(path: Path | None, public_key: Path) -> dict:
-    if path is not None:
-        value = catalog.read_json(path)
-    else:
-        try:
-            with urlopen(f"{CATALOG_URL}?cleanup={time.time_ns()}", timeout=30) as response:
-                value = json.load(response)
-        except HTTPError as error:
-            if error.code == 404:
+    with tempfile.TemporaryDirectory() as directory:
+        if path is None:
+            path = Path(directory) / "catalog.json"
+            if not fetch_catalog(path):
                 return {"images": []}
-            raise
+        value = catalog.read_json(path)
     return catalog.verify_catalog(value, public_key)
 
 
@@ -141,6 +147,11 @@ def main() -> int:
     cached.add_argument("--image", required=True)
     cached.add_argument("--upstream-digest", required=True)
     cached.add_argument("--output", type=Path, required=True)
+    newest = commands.add_parser("latest")
+    newest.add_argument("--image", required=True)
+    newest.add_argument("--output", type=Path, required=True)
+    fetch = commands.add_parser("fetch-catalog")
+    fetch.add_argument("--output", type=Path, required=True)
     cleanup = commands.add_parser("prune")
     cleanup.add_argument("--image", default="all")
     cleanup.add_argument("--catalog", type=Path)
@@ -149,6 +160,10 @@ def main() -> int:
     try:
         if arguments.command == "reuse":
             print(str(reuse(arguments.image, arguments.upstream_digest, arguments.output)).lower())
+        elif arguments.command == "latest":
+            latest(arguments.image, arguments.output)
+        elif arguments.command == "fetch-catalog":
+            print(str(fetch_catalog(arguments.output)).lower())
         else:
             selected = list(images.recipes()) if arguments.image == "all" else [arguments.image]
             manifest = current_catalog(arguments.catalog, arguments.public_key)

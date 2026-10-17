@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import copy
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -11,7 +13,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import call, patch
+from urllib.error import HTTPError, URLError
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +23,62 @@ import images
 
 
 class ImageRecipeTest(unittest.TestCase):
+    def test_resolve_retries_transient_failures_before_emitting_outputs(self) -> None:
+        entry = images.recipe("centos9-stream-latest")
+        filename = entry["url"].rsplit("/", 1)[1]
+        digest = "ab" * 32
+        errors = [HTTPError(entry["checksums"], code, "temporary failure", {}, None)
+                  for code in (408, 429, 500, 502, 503, 504)]
+        errors.extend([URLError("connection failed"), TimeoutError("timed out"),
+                       ConnectionResetError("connection reset")])
+        for error in errors:
+            with self.subTest(error=error), patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}), \
+                    patch.object(images, "urlopen", side_effect=[
+                        error, io.BytesIO(f"{digest}  {filename}\n".encode()),
+                    ]) as request, patch.object(images.time, "sleep") as sleep, \
+                    contextlib.redirect_stdout(io.StringIO()) as output, \
+                    contextlib.redirect_stderr(io.StringIO()) as diagnostics:
+                images.resolve("centos9-stream-latest")
+                self.assertEqual(output.getvalue(),
+                                 f"upstream_url={entry['url']}\nupstream_filename={filename}\n"
+                                 f"checksum_algorithm=sha256\nupstream_digest=sha256:{digest}\n")
+                self.assertEqual(request.call_count, 2)
+                sleep.assert_called_once_with(2)
+                self.assertIn("retrying", diagnostics.getvalue())
+
+    def test_resolve_stops_after_three_failed_requests(self) -> None:
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}), \
+                patch.object(images, "urlopen", side_effect=HTTPError(
+                    "https://example.test/checksums", 502, "Bad Gateway", {}, None,
+                )) as request, patch.object(images.time, "sleep") as sleep, \
+                patch.object(sys, "argv", ["images.py", "resolve", "centos9-stream-latest"]), \
+                contextlib.redirect_stdout(io.StringIO()) as output, \
+                contextlib.redirect_stderr(io.StringIO()) as diagnostics:
+            self.assertEqual(images.main(), 1)
+            self.assertEqual(request.call_count, 3)
+            self.assertEqual(sleep.call_args_list, [call(2), call(4)])
+            self.assertEqual(output.getvalue(), "")
+            self.assertIn("HTTP Error 502: Bad Gateway", diagnostics.getvalue())
+
+    def test_resolve_does_not_retry_rejections_or_invalid_checksums(self) -> None:
+        for failure in (401, 403, 404, "invalid checksum"):
+            with self.subTest(failure=failure), patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}), \
+                    patch.object(images, "urlopen") as request, \
+                    patch.object(images.time, "sleep") as sleep, \
+                    contextlib.redirect_stdout(io.StringIO()) as output:
+                if isinstance(failure, int):
+                    request.side_effect = HTTPError("https://example.test/checksums", failure,
+                                                   "request rejected", {}, None)
+                    expected = HTTPError
+                else:
+                    request.return_value = io.BytesIO(b"invalid checksum\n")
+                    expected = ValueError
+                with self.assertRaises(expected):
+                    images.resolve("centos9-stream-latest")
+                request.assert_called_once()
+                sleep.assert_not_called()
+                self.assertEqual(output.getvalue(), "")
+
     def test_record_emits_version_filename_and_verifiable_checksum(self) -> None:
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
             "GITHUB_REPOSITORY": "fixture/os-images", "GITHUB_SHA": "fixture",

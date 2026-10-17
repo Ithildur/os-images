@@ -86,17 +86,18 @@ The SHA-256 is lowercase hexadecimal without an algorithm prefix.
 uploaded with `Content-Type: application/json` and `Cache-Control: no-store`.
 The signed Catalog identifies the published revisions.
 
-The signed runtime Catalog is published at
-<https://github.com/Ithildur/os-images/releases/download/catalog-v1/catalog.json>.
-It contains only runtime identity, download, digest, size, format, and image
-contract fields. Build manifests and provenance remain separate from the
-runtime Catalog.
+The signed runtime Catalog is published as `catalog.json` at the R2 bucket root,
+available at `<public-base-url>/catalog.json`.
+Catalog v2 contains runtime identity, the bucket-relative `object_key`, digest,
+size, format, and image contract fields. Consumers append `object_key` to their
+configured public origin; the Catalog contains no download domain. Build
+manifests and provenance remain separate from the runtime Catalog.
 
-Catalog v1 encodes `sequence` and `size_bytes` as positive JSON integers that
+Catalog v2 encodes `sequence` and `size_bytes` as positive JSON integers that
 fit PostgreSQL `BIGINT`. Its signed manifest uses UTF-8 JSON, sorted object
 keys, no insignificant whitespace, and Go `encoding/json` string escaping
 (including `&`, `<`, `>`, U+2028, and U+2029). Publication starts at sequence 1
-only when the Catalog URL returns HTTP 404; other download failures stop publication.
+only when `catalog.json` is absent from the bucket; R2 access failures stop publication.
 The build manifest records the upstream digest and recipe digest. The recipe
 digest covers the image entry, build script, family script, and shared Linux
 configuration. An attested build is reused only for identical upstream and
@@ -130,35 +131,36 @@ The workflows map `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY` to the
 `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` environment variables used by
 the AWS CLI to access R2's S3-compatible API.
 
-The signing private key must match `catalog/keys/catalog-2026-01.pem` and the
-public key embedded in the VPS Manager Panel. The publishing workflow checks
-this match before signing. Updating the Panel's embedded key requires rebuilding
-and deploying the Panel.
+The signing private key must match `catalog/keys/catalog-2026-01.pem` and
+`catalog_public_key_pem` in the Panel's separate `os-images.toml` configuration.
+The publishing workflow checks the key against the repository's public key
+before signing. To change the Panel's trusted key, edit that file and restart
+the Panel. The required `r2_base_url` supplies the public origin for both
+`/catalog.json` and built-in image downloads, preserving image object paths
+and content verification. The configuration file itself is optional.
 
 1. Run **build OS images** (`build.yml`) with an image key or `all`. The weekly
    schedule builds all registered images, each in its own job.
    It verifies and builds the upstream image, uploads the image, checksum, and provenance,
    attests the image, and then records `build.json`. When the upstream and recipe
    digests already have an attested build, it reuses that build.
-2. Copy `object_key` from the run summary. The downloadable Actions artifact
-   contains `build.json`, also stored at
-   `<os>/<os_version>/<sha256>/build.json`. It records the object and provenance
-   paths, upstream and result digests, byte size, format, and the image contract
-   from `recipes/linux/contract.json`.
-3. Assemble the public HTTPS URL using your download domain and object path.
-   The object must be publicly downloadable at that URL.
-4. Run **publish image Catalog** (`publish.yml`) with `object_key` and `url`.
-   It reads the stored build manifest and downloads the supplied URL on the
-   GitHub runner to verify SHA-256 and size. It signs the manifest's image facts
-   together with that URL, then uploads `catalog.json` to the `catalog-v1`
-   GitHub Release. It updates the selected image while preserving other Catalog
-   entries. Catalog publications use the automatic `GITHUB_TOKEN`.
+   Upstream checksum requests retry transient HTTP errors (408, 429, 500, 502,
+   503, 504) and connection failures up to three attempts, waiting 2 then 4
+   seconds. Other HTTP errors and invalid checksums stop the job immediately.
+2. Run **publish image Catalog** (`publish.yml`) with an image key or `all`.
+   It selects each image's latest completed `build.json` from R2. Using the R2
+   credentials, the GitHub runner downloads each selected object and verifies
+   its SHA-256 and size. Only after all selected images pass
+   does it upload the signed `catalog.json` to the R2 bucket root, preserving
+   unselected entries. The upload uses `Content-Type: application/json` and
+   `Cache-Control: no-store`. A missing completed build or failed verification
+   stops publication without replacing the current Catalog.
 
 ### Retention
 
-After a successful build or Catalog publication, cleanup keeps the newest
-successful build for each system/version and the revision referenced by the
-current signed Catalog. When they are the same revision, only one is kept.
+After publication, each selected system/version retains one revision. Until
+publication succeeds, cleanup keeps the current published revision and the newest
+completed candidate. Publishing that candidate removes the previous revision.
 Successful builds are ordered by the R2 modification time of their `build.json`
 completion marker. A successful reuse refreshes that marker, so the selected
 revision becomes the newest successful build.
@@ -168,8 +170,8 @@ the same policy manually. Cleanup removes obsolete images, checksum files,
 provenance, and build manifests. It also removes unfinished uploads under the
 revision layout above. Other object paths and files are left untouched.
 
-Cleanup verifies the Catalog signature before deleting anything. HTTP 404 means
-no Catalog has been published; other download errors and invalid signatures
+Cleanup reads `catalog.json` through the R2 API and verifies its signature before
+deleting anything. An absent object means no Catalog has been published; R2 access errors and invalid signatures
 stop cleanup. Missing objects in an attested build also stop cleanup.
 Before deleting obsolete revisions, cleanup updates `latest.json` from the
 newest retained build. If updating a pointer fails, no revisions are deleted.
@@ -180,21 +182,20 @@ Build, publish, and cleanup workflows share the `image-storage` concurrency
 group. Each build's image matrix still runs in parallel. Catalog publication and
 cleanup cannot overlap uploads or each other.
 
-The runtime Catalog contains the complete URL. A published revision is immutable:
-republishing identical facts keeps the current Catalog sequence; changing the
-URL or other facts for the same digest fails.
+Republishing identical facts keeps the current Catalog sequence. A published
+revision's object key, digest, size, format, and guest contract are immutable.
+Changing the consumer's download domain does not require republishing the Catalog.
 
 To generate a signed Catalog file from a downloaded build manifest:
 
 ```bash
 python3 scripts/catalog.py publish --build build.json \
-  --url 'https://images.example.com/<object-key>' \
   --public-key catalog/keys/catalog-2026-01.pem --private-key private.pem \
   --output catalog.json
 ```
 
 When a Catalog already exists, supply it with `--current catalog-current.json`.
-The CLI signs metadata; public image byte verification runs in `publish.yml`.
+The CLI signs metadata; R2 image byte verification runs in `publish.yml`.
 
 ## Release acceptance
 

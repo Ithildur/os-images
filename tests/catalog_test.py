@@ -23,7 +23,7 @@ class CatalogToolTest(unittest.TestCase):
         subprocess.run(["openssl", "genpkey", "-algorithm", "ED25519", "-out", self.private_key], check=True)
         subprocess.run(["openssl", "pkey", "-in", self.private_key, "-pubout", "-out", self.public_key], check=True)
 
-    def test_panel_catalog_fixture(self) -> None:
+    def test_catalog_fixture(self) -> None:
         fixtures = ROOT / "tests/fixtures"
         self.run_tool("catalog", "verify", fixtures / "catalog.json", "--public-key", fixtures / "catalog-public.pem")
 
@@ -37,6 +37,22 @@ class CatalogToolTest(unittest.TestCase):
         result = self.run_tool("catalog", "verify", self.catalog, "--public-key", self.public_key, check=False)
         self.assertNotEqual(result.returncode, 0)
 
+    def test_catalog_rejects_object_keys_outside_the_image_revision(self) -> None:
+        fixtures = ROOT / "tests/fixtures"
+        digest = "ab" * 32
+        for key in (None, f"https://example.test/debian/13/{digest}/13.qcow2",
+                    f"//example.test/debian/13/{digest}/13.qcow2", f"../debian/13/{digest}/13.qcow2",
+                    f"debian/13/{digest}/../13.qcow2", f"debian/13/{digest}/%2e%2e",
+                    f"debian/12/{digest}/12.qcow2", f"debian/13/{'cd' * 32}/13.qcow2"):
+            with self.subTest(object_key=key):
+                value = json.loads((fixtures / "catalog.json").read_text(encoding="utf-8"))
+                value["manifest"]["images"][0]["revision"]["object_key"] = key
+                self.catalog.write_text(json.dumps(value), encoding="utf-8")
+                result = self.run_tool("catalog", "verify", self.catalog,
+                                       "--public-key", fixtures / "catalog-public.pem", check=False)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("object key", result.stderr)
+
     def test_publish_multiple_images_preserves_other_revisions(self) -> None:
         entries = json.loads((ROOT / "recipes/images.json").read_text(encoding="utf-8"))
         for key in entries:
@@ -49,7 +65,7 @@ class CatalogToolTest(unittest.TestCase):
             build = json.loads((self.root / key / "build.json").read_text(encoding="utf-8"))
             self.assertEqual(by_key[key], {
                 "key": key, "name": entry["name"], "kind": "bootable",
-                "revision": {"url": f"https://images.example.test/{build['object_key']}",
+                "revision": {"object_key": build['object_key'],
                              "sha256": "sha256:" + build["result_sha256"], "size_bytes": build["size_bytes"],
                              "format": build["format"], "contract": build["contract"]},
             })
@@ -66,12 +82,17 @@ class CatalogToolTest(unittest.TestCase):
         self.publish(updated)
         self.assertEqual(json.loads(self.catalog.read_text(encoding="utf-8")), next_catalog)
 
-    def test_published_revision_url_is_immutable(self) -> None:
+    def test_published_content_is_immutable(self) -> None:
         build = self.build("ubuntu2404-latest")
         self.publish(build)
-        result = self.publish(build, url="https://mirror.example.test/image.qcow2", check=False)
+        before = self.catalog.read_bytes()
+        value = json.loads(build.read_text(encoding="utf-8"))
+        value["size_bytes"] += 1
+        build.write_text(json.dumps(value), encoding="utf-8")
+        result = self.publish(build, check=False)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("published image revision is immutable", result.stderr)
+        self.assertIn("published image content is immutable", result.stderr)
+        self.assertEqual(self.catalog.read_bytes(), before)
 
     def test_build_manifest_binds_image_identity_and_digests(self) -> None:
         build_path = self.build("ubuntu2204-latest")
@@ -95,11 +116,9 @@ class CatalogToolTest(unittest.TestCase):
                       "--sha256", digest, "--size-bytes", "4096", "--metadata", output, "--output", output)
         return output / "build.json"
 
-    def publish(self, build: Path, *, url: str | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
-        manifest = json.loads(build.read_text(encoding="utf-8"))
+    def publish(self, build: Path, *, check: bool = True) -> subprocess.CompletedProcess[str]:
         current = ["--current", self.catalog] if self.catalog.exists() else []
         return self.run_tool("catalog", "publish", *current, "--build", build,
-                             "--url", url or f"https://images.example.test/{manifest['object_key']}",
                              "--private-key", self.private_key, "--public-key", self.public_key,
                              "--output", self.catalog, check=check)
 

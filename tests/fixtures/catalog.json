@@ -4,7 +4,7 @@
       {
         "key": "debian13-latest",
         "kind": "bootable",
-        "name": "Debian <云> & \"server\" \\u2028 \u2028 \u2029 edition",
+        "name": "Debian <\u4e91> & \"server\" \\u2028 \u2028 \u2029 edition",
         "revision": {
           "contract": {
             "guest": {
@@ -26,14 +26,14 @@
             "purpose": "provisioning"
           },
           "format": "qcow2",
+          "object_key": "debian/13/abababababababababababababababababababababababababababababababab/13.qcow2",
           "sha256": "sha256:abababababababababababababababababababababababababababababababab",
-          "size_bytes": 4096,
-          "url": "https://images.example.test/debian.qcow2?mirror=1&download=true"
+          "size_bytes": 4096
         }
       }
     ],
     "sequence": 4
   },
-  "schema": "vps-manager-image-catalog/v1",
-  "signature": "rGKGnPKlvj+I0CGFSdbdhACu4t2A+X2AqozemhBVOFsJ0h2MG10rOyu5fTphds/Prjz74/MQOr3vagm97fimCg=="
+  "schema": "vps-manager-image-catalog/v2",
+  "signature": "N8f0Tk7dlNm33ZlnkLo2J9bFKHwSqUDwsHq4NC3qitEKe+NOlmSKrHh+RHoFjlCBO46J1YAK4OuAu+UIlD6/Dw=="
 }

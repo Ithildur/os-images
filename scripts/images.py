@@ -11,6 +11,8 @@ import os
 from pathlib import Path
 import re
 import sys
+import time
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import urlopen
 
@@ -91,8 +93,22 @@ def resolve(key: str) -> None:
         raise ValueError("upstream resolution is remote-only")
     entry = recipe(key)
     filename = urlsplit(entry["url"]).path.rsplit("/", 1)[1]
-    with urlopen(entry["checksums"], timeout=30) as response:
-        text = response.read().decode("utf-8")
+    for attempt in range(3):
+        try:
+            with urlopen(entry["checksums"], timeout=30) as response:
+                text = response.read().decode("utf-8")
+            break
+        except (URLError, TimeoutError, ConnectionError) as error:
+            if isinstance(error, HTTPError):
+                error.close()
+                if error.code not in {408, 429, 500, 502, 503, 504}:
+                    raise
+            if attempt == 2:
+                raise
+            delay = 2 ** (attempt + 1)
+            print(f"images: checksum request failed: {error}; retrying in {delay}s "
+                  f"(attempt {attempt + 2}/3)", file=sys.stderr)
+            time.sleep(delay)
     digest = checksum(text, filename, entry["checksum_algorithm"])
     print(f"upstream_url={entry['url']}")
     print(f"upstream_filename={filename}")

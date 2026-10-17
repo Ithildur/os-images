@@ -13,16 +13,15 @@ import re
 import subprocess
 import sys
 import tempfile
-from urllib.parse import urlsplit
 
 from images import locate, recipe, valid_digest
 
 
-SCHEMA = "vps-manager-image-catalog/v1"
+SCHEMA = "vps-manager-image-catalog/v2"
 KEY = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 ALLOWED_IMAGE_KEYS = {"key", "name", "kind", "revision"}
-ALLOWED_REVISION_KEYS = {"url", "sha256", "size_bytes", "format", "contract"}
+ALLOWED_REVISION_KEYS = {"object_key", "sha256", "size_bytes", "format", "contract"}
 
 
 class CatalogError(ValueError):
@@ -35,7 +34,7 @@ def exact_keys(value: dict, expected: set[str], label: str) -> None:
 
 
 def canonical(value: object) -> bytes:
-    # Catalog v1 uses Go encoding/json string escaping at the Panel boundary.
+    # Match Go encoding/json string escaping at the Panel boundary.
     encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     for character in ("&", "<", ">", "\u2028", "\u2029"):
         encoded = encoded.replace(character, f"\\u{ord(character):04x}")
@@ -57,14 +56,6 @@ def valid_time(value: object) -> bool:
     except ValueError:
         return False
     return True
-
-
-def validate_url(value: object) -> None:
-    if not isinstance(value, str) or len(value) > 2048:
-        raise CatalogError("revision URL is invalid")
-    parsed = urlsplit(value)
-    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.fragment:
-        raise CatalogError("revision URL must be a public HTTPS URL")
 
 
 def validate_contract(contract: object, image_kind: str, image_format: str) -> None:
@@ -141,9 +132,12 @@ def validate_manifest(manifest: object) -> dict:
         if not isinstance(revision, dict):
             raise CatalogError("catalog revision is invalid")
         exact_keys(revision, ALLOWED_REVISION_KEYS, "revision")
-        validate_url(revision["url"])
         if not isinstance(revision["sha256"], str) or not DIGEST.fullmatch(revision["sha256"]):
             raise CatalogError("revision SHA-256 is invalid")
+        object_key = revision["object_key"]
+        if (not isinstance(object_key, str) or locate(object_key) != key
+            or object_key.rsplit("/", 2)[1] != revision["sha256"].removeprefix("sha256:")):
+            raise CatalogError("revision object key does not match its image and digest")
         if not isinstance(revision["size_bytes"], int) or isinstance(revision["size_bytes"], bool) or not 1 <= revision["size_bytes"] <= 2**63 - 1:
             raise CatalogError("revision size is invalid")
         if revision["format"] not in {"qcow2", "raw", "iso"}:
@@ -281,18 +275,17 @@ def command_publish(arguments: argparse.Namespace) -> None:
 
     build = read_build(arguments.build)
     revision = {
-        "url": arguments.url,
+        "object_key": build["object_key"],
         "sha256": f"sha256:{build['result_sha256']}",
         "size_bytes": build["size_bytes"],
         "format": build["format"],
         "contract": build["contract"],
     }
-    validate_url(revision["url"])
     expected_digest = revision["sha256"]
     for image in images:
         if image["key"] == build["image_key"] and image["revision"]["sha256"] == expected_digest:
             if image["revision"] != revision:
-                raise CatalogError("published image revision is immutable; URL and build facts must match")
+                raise CatalogError("published image content is immutable; build facts must match")
             write_json(arguments.output, current)
             return
 
@@ -333,7 +326,6 @@ def parser() -> argparse.ArgumentParser:
     publish.add_argument("--current", type=Path)
     publish.add_argument("--public-key", type=Path, required=True)
     publish.add_argument("--private-key", type=Path, required=True)
-    publish.add_argument("--url", required=True)
     publish.add_argument("--build", type=Path, required=True)
     publish.add_argument("--output", type=Path, required=True)
     publish.set_defaults(run=command_publish)
