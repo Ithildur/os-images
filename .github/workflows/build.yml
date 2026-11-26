@@ -136,7 +136,11 @@ jobs:
           object_key="$(jq --exit-status --raw-output .object_key "${work}/build.json")"
           python3 scripts/catalog.py build "${work}/build.json" --object-key "${object_key}" >>"${GITHUB_OUTPUT}"
 
-          aws --endpoint-url "${R2_ENDPOINT_URL}" s3 cp "${output}" "s3://${R2_BUCKET}/${object_key}" --only-show-errors
+          upload=(aws --endpoint-url "${R2_ENDPOINT_URL}" s3 cp "${output}" "s3://${R2_BUCKET}/${object_key}" --only-show-errors)
+          if ! "${upload[@]}"; then
+            printf '::warning::Image upload failed; retrying the same file once.\n' >&2
+            "${upload[@]}"
+          fi
           aws --endpoint-url "${R2_ENDPOINT_URL}" s3 cp "${work}/image.sha256" \
             "s3://${R2_BUCKET}/${object_key%.qcow2}.sha256" --content-type text/plain --only-show-errors
           aws --endpoint-url "${R2_ENDPOINT_URL}" s3 cp "${work}/provenance.json" \

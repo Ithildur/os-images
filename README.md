@@ -25,12 +25,13 @@ It installs `cloud-init`, `cloud-guest-utils`, `qemu-guest-agent`, and
 CentOS Stream uses `recipes/redhat/customize.sh`, with DNF, `cloud-utils-growpart`,
 GRUB/BLS configuration through `grubby`, and SELinux label restoration.
 
-`recipes/linux/` holds the shared initialization contract and configuration:
-root initialization through NoCloud, SSH password authentication, serial
-console, and automatic root-partition and filesystem growth. Both family recipes
-run the shared `recipes/linux/configure.sh` to apply initialization, SSH,
-Guest Agent, serial-getty, and identity cleanup. Package installation, boot-loader
-updates, and package-cache cleanup belong to the family recipe.
+`recipes/linux/` configures root initialization through NoCloud, the serial
+console, and automatic root-partition and filesystem growth. On first boot,
+cloud-init enables SSH password authentication by default. Instances using only
+SSH keys disable it with `ssh_pwauth: false` in their NoCloud user data.
+Both family recipes run the shared `recipes/linux/configure.sh` to apply
+initialization, SSH, Guest Agent, serial-getty, and identity cleanup. Package
+installation, boot-loader updates, and package-cache cleanup belong to the family recipe.
 The build clears cloud-init state, machine identity, SSH host keys,
 temporary files, generated network configuration, and package caches. It does
 not contain a password, DNS server, IP address, hostname, Provider setting, or
@@ -142,7 +143,8 @@ and content verification. The configuration file itself is optional.
 1. Run **build OS images** (`build.yml`) with an image key or `all`. The weekly
    schedule builds all registered images, each in its own job.
    It verifies and builds the upstream image, uploads the image, checksum, and provenance,
-   attests the image, and then records `build.json`. When the upstream and recipe
+   attests the image, and then records `build.json`. If the image upload fails,
+   the job retries it once using the same file. When the upstream and recipe
    digests already have an attested build, it reuses that build.
    Upstream checksum requests retry transient HTTP errors (408, 429, 500, 502,
    503, 504) and connection failures up to three attempts, waiting 2 then 4

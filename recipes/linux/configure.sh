@@ -12,7 +12,6 @@ systemctl enable serial-getty@ttyS0.service
 rm -f /etc/cloud/cloud-init.disabled
 cloud-init clean --logs
 rm -rf /var/lib/cloud/*
-: >/etc/machine-id
 rm -f /var/lib/dbus/machine-id
 rm -f /etc/ssh/ssh_host_* /var/lib/systemd/random-seed
 find /tmp /var/tmp -mindepth 1 -delete

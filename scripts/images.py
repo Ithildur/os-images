@@ -149,7 +149,7 @@ def record(arguments: argparse.Namespace) -> None:
         "workflow": {"repository": os.environ["GITHUB_REPOSITORY"], "commit": os.environ["GITHUB_SHA"],
                      "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"]},
         "packages": packages,
-        "customization": ["root cloud-init account", "SSH password authentication", "serial console",
+        "customization": ["root cloud-init account", "cloud-init SSH password policy", "serial console",
                           "root filesystem growth", "qemu-guest-agent", "instance identity cleanup"],
         "license": entry["license"],
     }

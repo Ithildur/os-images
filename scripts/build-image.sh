@@ -27,7 +27,10 @@ virt-customize -a "${output_image}" \
 	--mkdir /var/lib/vps-manager-image \
 	--copy-in "${repo}/recipes/linux:/var/lib/vps-manager-image" \
 	--run "${repo}/recipes/${family}/customize.sh"
-virt-copy-out -a "${output_image}" /var/lib/vps-manager-image/packages.tsv "${metadata}"
-virt-customize --no-network -a "${output_image}" \
-	--run-command 'rm -rf /var/lib/vps-manager-image'
+guestfish --rw --format=qcow2 -a "${output_image}" -i \
+	download /var/lib/vps-manager-image/packages.tsv "${metadata}/packages.tsv" : \
+	rm-rf /var/lib/vps-manager-image : \
+	truncate /etc/machine-id
+machine_id_size="$(guestfish --ro --format=qcow2 -a "${output_image}" -i filesize /etc/machine-id)"
+[[ "${machine_id_size}" == 0 ]] || die "/etc/machine-id must be empty in the finished image"
 qemu-img check "${output_image}"
